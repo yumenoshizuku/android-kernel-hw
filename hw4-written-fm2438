@@ -1,0 +1,65 @@
+1.
+First fit:
+(a) 20KB
+(b) 10KB
+(c) 18KB
+
+Best fit:
+(a) 12KB
+(b) 10KB
+(c) 9KB
+
+Worst fit:
+(a) 20KB
+(b) 18KB
+(c) 15KB
+
+Next fit:
+(a) 20KB
+(b) 18KB
+(c) 9KB
+
+2.
+2 ^ 32 / 8192 = 524,288 entries
+524,288 * 100 ns / 100 ms * 100% = 52.4%
+
+3.
+(a)
+Much of the unused virtual addresses will not be paged in the table to save	space.
+(b)
+16384 = 2 ^ 14, offset has 14 bits
+2 ^ 38 / 2 ^ 14 = 2 ^ 24 entries
+2 ^ 14 / 4 = 2 ^ 12 entries per page
+2 ^ 24 / 2 ^ 12 = 2 ^ 12 pages
+12 bits for the top level and 12 bits for the next level.
+
+4.
+rate * 1 + (1 - rate) * 5 = 2    ==>    5 - rate * 4 = 2    ==>    rate = 75%
+
+5.
+(a)
+When using standard replacement algorithms, the earliest page visited will
+always be evicted if the allocated pages are less than the sequence length,
+thus when the evicted pages are later called in the sequence they were evicted,
+there would be no future hits except for the possibility that the random page
+reference may hit.
+(b)
+If pages are randomly evicted, then in theory there would only be 12 misses in
+each sequence of 513 references. NRU degenerates to this situation if the R bit
+is cleaned frequently compared with the length of each reference sequence. Or if
+the most recently used pages are evicted, the expectation would be the same.
+
+6.
+(a) NRU: Page 2
+(b) FIFO: Page 3
+(c) LRU: Page 1
+(d) Second change: Page 2
+
+7.
+Gragment B causes less page faults. A page fault would be caused once for every
+two rows, hence a total of 32 page faults. Fragment A causes a page fault for
+every two elements, hence 2048 page faults.
+
+8.
+Three page faults: one for TLB miss, one for the page table page fault, and one for the actual
+data page fault.

@@ -1,0 +1,183 @@
+1.
+If it is single threaded, for every three requests, two would occupy 15 msec
+each and one takes 90 msec. On average, each request would take 40 msec to
+complete, equaling 25 requests/sec.
+
+If multithreaded, when three requests have been received, there would be on
+average one request that needs disk access. During the 75 msec sleeping time,
+other processes can handle on average three more requests before another disk
+access, which means the average process time for each request would be 25 msec,
+converting to 40 requests/sec.
+
+If the disk can fulfill two disk requests simultaneously, then there would be
+no waiting between requests that need disk operation. In this way each request
+takes 15 msec to complete and the rate is 66.7 requests/sec.
+
+2.
+We can use one binary semaphore as mutex and multiple binary semaphores as
+counter. For each counter bit we can assign to them 2's power as each one's
+weight and implement binary addition and subtraction with these bit fields.
+
+3.
+The system or the waiting process would have to periodically detect whether the
+condition is true, which is inefficient. It might also happen that the condition
+becomes true for only a short period of time but during which the waiting
+process missed it.
+
+4.
+When the ith philosopher tests his neighbours without changing his state to
+THINKING, both tests would fail and hence none of the blocking philosophers
+would wake up. If we change the test so that when one philosopher tests his
+blocked neighbour, only the state of the further philosopher is being evaluated,
+that is, ( i + N - 2) % N for test(LEFT) and ( i + 2) % N for test(RIGHT), the
+solution would still be valid.
+
+5.
+monitor PhilosopherDining
+	const
+		N = 5;
+		LEFT = (position - 1 + N) % N;
+		LEFTLEFT = (position - 2 + N) % N;
+		RIGHT = (position + 1) % N;
+		RIGHTRIGHT = (position + 2) % N;
+		THINKING = 0;
+		HUNGRY = 1;
+		EATING = 2;
+	var
+		state:Array[1..N] of integer;
+		
+	procedure take_forks(position:integer);
+	begin
+		state[position] = HUNGRY;
+		if state[LEFT] = EATING or state[RIGHT] = EATING then wait(position);
+		state[position] = EATING
+	end;
+	
+	procedure put_forks(position:integer);
+	begin
+		state[position] = THINKING;
+		if state[LEFT] = HUNGRY and state[LEFTLEFT] != EATING then signal(LEFT);
+		if state[RIGHT] = HUNGRY and state[RIGHTRIGHT] != EATING then signal(RIGHT);
+	end;
+end monitor;
+
+procedure philosopher(position:integer);
+begin
+	while true do
+	begin
+		think();
+		take_forks(position);
+		eat();
+		put_forks(position);
+	end
+end;
+
+6.
+monitor Bathroom
+	const
+		N = 5;
+		EMPTY = 0;
+		WOMEN_PRESENT = 1;
+		MEN_PRESENT = 2;
+	var
+		state:integer;
+		count:integer;
+		
+	procedure woman_wants_to_enter;
+	begin
+		if stats = MEN_PRESENT then wait(empty)
+		else if stste = WOMEN_PRESENT then counter = counter + 1
+		else if state = EMPTY then
+		begin
+			state = WOMEN_PRESENT;
+			counter = counter + 1
+		end;
+	end;
+	
+	procedure man_wants_to_enter;
+	begin
+		if stats = WOMEN_PRESENT then wait(empty)
+		else if stste = MEN_PRESENT then counter = counter + 1
+		else if state = EMPTY then
+		begin
+			state = MEN_PRESENT;
+			counter = counter + 1
+		end;
+	end;
+	
+	procedure woman_leaves;
+	begin
+		count = count - 1;
+		if count = 0 then
+		begin
+			state = EMPTY;
+			signal(empty)
+		end;
+	end;
+	
+	procedure man_leaves;
+	begin
+		count = count - 1;
+		if count = 0 then
+		begin
+			state = EMPTY;
+			signal(empty)
+		end;
+	end;
+end monitor;
+
+procedure man;
+begin
+	while true do
+	begin
+		man_wants_to_enter;
+		man_leaves
+	end
+end;
+
+procedure woman;
+begin
+	while true do
+	begin
+		woman_wants_to_enter;
+		woman_leaves
+	end
+end;
+
+7.
+When two threads try to get the lock simultaneously:
+
+                     begin
+                       |
+                ----------------
+---------       |              |
+| 0 | 0 |       |              |
+---------       v              v
+             thread 0        thread 1
+                |              .
+                |              .
+                v              .
+            lock() {           .
+                flag[0] = 1;   .
+                |              .
+---------       |              .
+| 1 | 0 |       ---------------|
+---------       .              |
+                .              v
+                .          lock() {           .
+                .              flag[1] = 1;
+---------       .              while(flag[0]==1)
+| 1 | 1 |       .                  ;
+---------       .              /* deadlock */
+                .              |
+                .              |
+                |---------------
+                |
+                v
+---------       while(flag[1]==1)
+| 1 | 1 |       ;
+---------       /* deadlock */
+
+8.
+Race condition will be reported, since the two variables are contained within a
+single word, and the two threads writing to it hold different locks.

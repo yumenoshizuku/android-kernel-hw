@@ -1,0 +1,279 @@
+diff --git a/arch/arm/include/asm/unistd.h b/arch/arm/include/asm/unistd.h
+index 512cd14..2c1db5e 100644
+--- a/arch/arm/include/asm/unistd.h
++++ b/arch/arm/include/asm/unistd.h
+@@ -404,6 +404,7 @@
+ #define __NR_setns			(__NR_SYSCALL_BASE+375)
+ #define __NR_process_vm_readv		(__NR_SYSCALL_BASE+376)
+ #define __NR_process_vm_writev		(__NR_SYSCALL_BASE+377)
++#define __NR_sched_setlimit			(__NR_SYSCALL_BASE+378)
+ 
+ /*
+  * The following SWIs are ARM private.
+diff --git a/arch/arm/kernel/calls.S b/arch/arm/kernel/calls.S
+index 463ff4a..5e95e86 100644
+--- a/arch/arm/kernel/calls.S
++++ b/arch/arm/kernel/calls.S
+@@ -387,6 +387,7 @@
+ /* 375 */	CALL(sys_setns)
+ 		CALL(sys_process_vm_readv)
+ 		CALL(sys_process_vm_writev)
++		CALL(sys_sched_setlimit)
+ #ifndef syscalls_counted
+ .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
+ #define syscalls_counted
+diff --git a/include/linux/init_task.h b/include/linux/init_task.h
+index e4baff5..3b713c5 100644
+--- a/include/linux/init_task.h
++++ b/include/linux/init_task.h
+@@ -200,6 +200,7 @@ extern struct cred init_cred;
+ 	INIT_TRACE_RECURSION						\
+ 	INIT_TASK_RCU_PREEMPT(tsk)					\
+ 	INIT_CPUSET_SEQ							\
++	.mycfs_cpu_limit = 0,						\
+ }
+ 
+ 
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index ff6bb0f..0ac8434 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -39,6 +39,7 @@
+ #define SCHED_BATCH		3
+ /* SCHED_ISO: reserved but not implemented yet */
+ #define SCHED_IDLE		5
++#define SCHED_MYCFS		6
+ /* Can be ORed in to make sure the process is reverted back to SCHED_NORMAL on fork */
+ #define SCHED_RESET_ON_FORK     0x40000000
+ 
+@@ -1232,6 +1233,17 @@ struct sched_entity {
+ #endif
+ };
+ 
++struct sched_mycfs_entity {
++	struct rb_node		run_node;
++	unsigned int		on_rq;
++
++	u64			exec_start;
++	u64			vruntime;
++
++	u64			curr_period_id;
++	u64			curr_period_sum_runtime;
++};
++
+ struct sched_rt_entity {
+ 	struct list_head run_list;
+ 	unsigned long timeout;
+@@ -1281,6 +1293,8 @@ struct task_struct {
+ 	const struct sched_class *sched_class;
+ 	struct sched_entity se;
+ 	struct sched_rt_entity rt;
++	struct sched_mycfs_entity myse;
++	int mycfs_cpu_limit;
+ 
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+ 	/* list of struct preempt_notifier: */
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 3de3acb..923909e 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -858,4 +858,6 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
+ 				      unsigned long riovcnt,
+ 				      unsigned long flags);
+ 
++asmlinkage long sys_sched_setlimit(pid_t pid, int limit);
++
+ #endif
+diff --git a/kernel/sched/Makefile b/kernel/sched/Makefile
+index 3ede7d9..cefb272 100644
+--- a/kernel/sched/Makefile
++++ b/kernel/sched/Makefile
+@@ -11,7 +11,7 @@ ifneq ($(CONFIG_SCHED_OMIT_FRAME_POINTER),y)
+ CFLAGS_core.o := $(PROFILING) -fno-omit-frame-pointer
+ endif
+ 
+-obj-y += core.o clock.o idle_task.o fair.o rt.o stop_task.o sched_avg.o
++obj-y += core.o clock.o idle_task.o fair.o mycfs.o rt.o stop_task.o sched_avg.o
+ obj-$(CONFIG_SMP) += cpupri.o
+ obj-$(CONFIG_SCHED_AUTOGROUP) += auto_group.o
+ obj-$(CONFIG_SCHEDSTATS) += stats.o
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 1cee48f..4b4bd2f 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -1740,6 +1740,11 @@ static void __sched_fork(struct task_struct *p)
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+ 	INIT_HLIST_HEAD(&p->preempt_notifiers);
+ #endif
++	p->myse.on_rq = 0;
++	p->myse.exec_start = 0;
++	p->myse.vruntime = 0;
++	p->myse.curr_period_id = 0;
++	p->myse.curr_period_sum_runtime = 0;
+ }
+ 
+ /*
+@@ -1784,7 +1789,9 @@ void sched_fork(struct task_struct *p)
+ 		p->sched_reset_on_fork = 0;
+ 	}
+ 
+-	if (!rt_prio(p->prio))
++	if (current->sched_class == &mycfs_sched_class)
++		p->sched_class = &mycfs_sched_class;
++	else if (!rt_prio(p->prio))
+ 		p->sched_class = &fair_sched_class;
+ 
+ 	if (p->sched_class->task_fork)
+@@ -3037,13 +3044,20 @@ void scheduler_tick(void)
+ 	int cpu = smp_processor_id();
+ 	struct rq *rq = cpu_rq(cpu);
+ 	struct task_struct *curr = rq->curr;
++	int skipped_task;
+ 
+ 	sched_clock_tick();
+ 
+ 	raw_spin_lock(&rq->lock);
+ 	update_rq_clock(rq);
+ 	update_cpu_load_active(rq);
++	skipped_task = mycfs_scheduler_tick(rq);
+ 	curr->sched_class->task_tick(rq, curr, 0);
++	/* this is safe even if task_tick did a resched because the impl checks
++	   for the flag being set first */
++	if(skipped_task) {
++		resched_task(curr);
++	}
+ 	raw_spin_unlock(&rq->lock);
+ 
+ 	perf_event_task_tick();
+@@ -3867,7 +3881,9 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
+ 	if (running)
+ 		p->sched_class->put_prev_task(rq, p);
+ 
+-	if (rt_prio(prio))
++	if (p->sched_class == &mycfs_sched_class)
++		p->sched_class = &mycfs_sched_class;
++	else if (rt_prio(prio))
+ 		p->sched_class = &rt_sched_class;
+ 	else
+ 		p->sched_class = &fair_sched_class;
+@@ -4059,7 +4075,9 @@ __setscheduler(struct rq *rq, struct task_struct *p, int policy, int prio)
+ 	p->normal_prio = normal_prio(p);
+ 	/* we are holding p->pi_lock already */
+ 	p->prio = rt_mutex_getprio(p);
+-	if (rt_prio(p->prio))
++	if (policy == SCHED_MYCFS)
++		p->sched_class = &mycfs_sched_class;
++	else if (rt_prio(p->prio))
+ 		p->sched_class = &rt_sched_class;
+ 	else
+ 		p->sched_class = &fair_sched_class;
+@@ -4107,7 +4125,7 @@ recheck:
+ 
+ 		if (policy != SCHED_FIFO && policy != SCHED_RR &&
+ 				policy != SCHED_NORMAL && policy != SCHED_BATCH &&
+-				policy != SCHED_IDLE)
++				policy != SCHED_IDLE && policy != SCHED_MYCFS)
+ 			return -EINVAL;
+ 	}
+ 
+@@ -7002,6 +7020,7 @@ void __init sched_init(void)
+ 		rq->calc_load_active = 0;
+ 		rq->calc_load_update = jiffies + LOAD_FREQ;
+ 		init_cfs_rq(&rq->cfs);
++		init_mycfs_rq(&rq->mycfs, rq);
+ 		init_rt_rq(&rq->rt, rq);
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
+@@ -7363,8 +7382,10 @@ void sched_move_task(struct task_struct *tsk)
+ #endif
+ 		set_task_rq(tsk, task_cpu(tsk));
+ 
+-	if (unlikely(running))
++	if (unlikely(running)) {
++		/*if(tsk->sched_class == &mycfs_sched_class) printk("SCHED_MOVE_TASK!!\n");*/
+ 		tsk->sched_class->set_curr_task(rq);
++	}
+ 	if (on_rq)
+ 		enqueue_task(rq, tsk, 0);
+ 
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index fc60d5b..d240ab2 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -5536,7 +5536,7 @@ static unsigned int get_rr_interval_fair(struct rq *rq, struct task_struct *task
+  * All the scheduling class methods:
+  */
+ const struct sched_class fair_sched_class = {
+-	.next			= &idle_sched_class,
++	.next			= &mycfs_sched_class,
+ 	.enqueue_task		= enqueue_task_fair,
+ 	.dequeue_task		= dequeue_task_fair,
+ 	.yield_task		= yield_task_fair,
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 5370bcb..c123983 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -78,6 +78,7 @@ extern struct mutex sched_domains_mutex;
+ #include <linux/cgroup.h>
+ 
+ struct cfs_rq;
++struct mycfs_rq;
+ struct rt_rq;
+ 
+ static LIST_HEAD(task_groups);
+@@ -273,6 +274,30 @@ struct cfs_rq {
+ #endif /* CONFIG_FAIR_GROUP_SCHED */
+ };
+ 
++/* myCFS runqueue */
++struct mycfs_rq {
++	unsigned long nr_running;
++
++	u64 exec_clock;
++	u64 min_vruntime;
++#ifndef CONFIG_64BIT
++	u64 min_vruntime_copy;
++#endif
++	u64 curr_period; /* id of the current period */
++	u64 curr_period_start; /* start time of current period */
++	
++	struct rb_root tasks_timeline;
++	struct rb_node *rb_leftmost;
++
++	/* currently running entity */
++	struct sched_mycfs_entity *curr;
++
++	/* did I skip at least one entity when picking next task? */
++	int skipped_task;
++
++	struct rq *rq; /* parent rq */
++};
++
+ static inline int rt_bandwidth_enabled(void)
+ {
+ 	return sysctl_sched_rt_runtime >= 0;
+@@ -371,6 +396,7 @@ struct rq {
+ 	u64 nr_switches;
+ 
+ 	struct cfs_rq cfs;
++	struct mycfs_rq mycfs;
+ 	struct rt_rq rt;
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+@@ -856,6 +882,7 @@ enum cpuacct_stat_index {
+ extern const struct sched_class stop_sched_class;
+ extern const struct sched_class rt_sched_class;
+ extern const struct sched_class fair_sched_class;
++extern const struct sched_class mycfs_sched_class;
+ extern const struct sched_class idle_sched_class;
+ 
+ 
+@@ -1154,6 +1181,8 @@ extern void print_cfs_stats(struct seq_file *m, int cpu);
+ extern void print_rt_stats(struct seq_file *m, int cpu);
+ 
+ extern void init_cfs_rq(struct cfs_rq *cfs_rq);
++extern void init_mycfs_rq(struct mycfs_rq *mycfs_rq, struct rq *rq);
++extern int mycfs_scheduler_tick(struct rq *rq);
+ extern void init_rt_rq(struct rt_rq *rt_rq, struct rq *rq);
+ extern void unthrottle_offline_cfs_rqs(struct rq *rq);
+ 

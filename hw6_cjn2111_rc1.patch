@@ -1,0 +1,425 @@
+diff --git a/arch/arm/kernel/calls.S b/arch/arm/kernel/calls.S
+index 463ff4a..54a41fb 100644
+--- a/arch/arm/kernel/calls.S
++++ b/arch/arm/kernel/calls.S
+@@ -387,6 +387,7 @@
+ /* 375 */	CALL(sys_setns)
+ 		CALL(sys_process_vm_readv)
+ 		CALL(sys_process_vm_writev)
++		CALL(sys_ext4_cowcopy)
+ #ifndef syscalls_counted
+ .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
+ #define syscalls_counted
+diff --git a/fs/Makefile b/fs/Makefile
+index 95cf9de6..d05cb95 100644
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -11,7 +11,7 @@ obj-y :=	open.o read_write.o file_table.o super.o \
+ 		attr.o bad_inode.o file.o filesystems.o namespace.o \
+ 		seq_file.o xattr.o libfs.o fs-writeback.o \
+ 		pnode.o drop_caches.o splice.o sync.o utimes.o \
+-		stack.o fs_struct.o statfs.o
++		stack.o fs_struct.o statfs.o cowcopy.o
+ 
+ ifeq ($(CONFIG_BLOCK),y)
+ obj-y +=	buffer.o bio.o block_dev.o direct-io.o mpage.o ioprio.o
+diff --git a/fs/cowcopy.c b/fs/cowcopy.c
+new file mode 100644
+index 0000000..042b51a
+--- /dev/null
++++ b/fs/cowcopy.c
+@@ -0,0 +1,92 @@
++#include <linux/syscalls.h>
++#include <linux/string.h>
++#include <linux/stat.h>
++#include <linux/printk.h>
++#include <linux/namei.h>
++#include <linux/fs.h>
++#include <linux/path.h>
++#include <linux/mount.h>
++
++#define DO_COWCOPY_DEBUG
++#ifdef DO_COWCOPY_DEBUG
++#define COW_DEBUG printk
++#else
++#define COW_DEBUG(...) ((void)0)
++#define 
++#endif
++
++/* this should be in ext4 header */
++extern int myvfs_cowcopy(struct dentry *old_link, struct inode *dir, struct dentry *new_dentry);
++
++
++asmlinkage int sys_ext4_cowcopy(const char __user *src, const char __user *dest)
++{
++	int ret = 0;
++	int rc;
++	struct path srcpath, destpath;
++	struct super_block *src_sb;
++	struct dentry *src_dentry;
++	struct dentry *dest_dentry;
++	COW_DEBUG("COW: src %p, dest %p\n", src, dest);
++
++	rc = user_path_at(AT_FDCWD, src, 0, &srcpath);
++	COW_DEBUG("COW: rc from user_path_at %d\n", rc);
++	if(rc) {
++		/* catches fault, non existence */
++		return rc;
++	}
++	src_sb = srcpath.mnt->mnt_sb;
++	src_dentry = srcpath.dentry;
++	/* check ext4 */
++	if(strcmp(src_sb->s_type->name, "ext4")) {
++		COW_DEBUG("COW: failed check for dev type, got %s\n",
++		          src_sb->s_type->name);
++		ret = -EOPNOTSUPP;
++		goto out_srcchk;
++	}
++	/* check being a regular file */
++	if(!src_dentry->d_inode) {
++		COW_DEBUG("COW: d_inode is NULL\n");
++		ret = -ENOENT;
++		goto out_srcchk;
++	}
++	if(!S_ISREG(src_dentry->d_inode->i_mode)) {
++		COW_DEBUG("COW: src not regular file\n");
++		ret = -EPERM;
++		goto out_srcchk;
++	}
++	/* check being currently open for writing*/
++	if(atomic_read(&src_dentry->d_inode->i_writecount) > 0) {
++		COW_DEBUG("COW: src has at least one writer open\n");
++		ret = -EPERM;
++		goto out_srcchk;
++	}
++	COW_DEBUG("COW: src checks complete\n");
++	/* create new path (catches eexist) */
++	dest_dentry = user_path_create(AT_FDCWD, dest, &destpath, 0);
++	if(IS_ERR(dest_dentry)) {
++		ret = PTR_ERR(dest_dentry);
++		goto out_srcchk;
++	}
++	/* check dest path on same device */
++	if(destpath.mnt != srcpath.mnt) {
++		ret = -EXDEV;
++		goto out_destchk;
++	}
++	/* time to write */
++	ret = mnt_want_write(destpath.mnt);
++	if(ret) {
++		goto out_destchk;
++	}
++	/* here we do the linkup */
++	ret = myvfs_cowcopy(srcpath.dentry, destpath.dentry->d_inode, dest_dentry);
++	/*out_drop_write:*/
++	mnt_drop_write(destpath.mnt);
++	out_destchk:
++	dput(dest_dentry);
++	mutex_unlock(&destpath.dentry->d_inode->i_mutex);
++	path_put(&destpath);
++	out_srcchk:
++	path_put(&srcpath);
++	return ret;
++}
+diff --git a/fs/ext4/file.c b/fs/ext4/file.c
+index cb70f18..8c5726c 100644
+--- a/fs/ext4/file.c
++++ b/fs/ext4/file.c
+@@ -24,6 +24,7 @@
+ #include <linux/mount.h>
+ #include <linux/path.h>
+ #include <linux/quotaops.h>
++#include <linux/swap.h>
+ #include "ext4.h"
+ #include "ext4_jbd2.h"
+ #include "xattr.h"
+@@ -158,7 +159,95 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
+ 	return 0;
+ }
+ 
+-static int ext4_file_open(struct inode * inode, struct file * filp)
++extern int ext4_get_cowcount(struct inode *, int *);
++extern int ext4_delta_cowcount(struct inode *, int);
++
++static int check_cow_open(struct inode *inode, struct file *filp, struct inode **correct_inode) {
++	int rc;
++	int ccount = 0;
++	/* check the cow counter */
++	if((rc = ext4_get_cowcount(inode, &ccount))) {
++		return rc;
++	}
++	if(ccount <= 0) {
++		/* no cow going on, just return immediately */
++		return 0;
++	}
++	/* first deduce the cow, so that open of the other file doesn't try to copy from us */
++	rc = ext4_delta_cowcount(inode, -1);
++	if(rc)
++		return rc;
++	/* cleanup the write access from inode */
++	put_write_access(inode);
++	{
++		/* we grab the dentry that triggered this from filp, and get the parent from that */
++		struct dentry *dentry = filp->f_path.dentry;
++		struct dentry *dir_dentry = dentry->d_parent;
++		struct inode *dir = dir_dentry->d_inode;
++		umode_t old_mode = inode->i_mode;
++		struct inode *new_inode;
++		size_t pnum;
++		printk("COW: about to unlink\n");
++		/* unlink the old dentry right now (calls ex4_unlink) */
++		if((rc = dir->i_op->unlink(dir, dentry))) {
++			return rc;
++		}
++		/* perform cleanup to be ready for the new inode */
++		/* TODO: do d_delete(dentry) here instead? problem is that releases locks too*/
++		dentry->d_inode = NULL;
++		list_del_init(&dentry->d_alias);
++		INIT_LIST_HEAD(&dentry->d_alias);
++		/* do a create */
++		printk("COW: about to create\n");
++		if((rc = dir->i_op->create(dir, dentry, old_mode, NULL))) {
++			return rc;
++		}
++		printk("COW: created\n");
++		/* now dentry has the new inode */
++		new_inode = dentry->d_inode;
++		/* do the copy of blocks here */
++		for(pnum=0;pnum<inode->i_mapping->nrpages;++pnum) {
++			struct page *old_page, *new_page;
++			void *old_mem, *new_mem;
++			old_page = grab_cache_page(inode->i_mapping, pnum);
++			new_page = grab_cache_page(new_inode->i_mapping, pnum);
++			if(!old_page || !new_page) {
++				return -ENOMEM;
++			}
++			old_mem = kmap(old_page);
++			if(!old_mem)
++				return -ENOMEM;
++			new_mem = kmap(new_page);
++			if(!new_mem) {
++				kunmap(old_page);
++				return -ENOMEM;
++			}
++			memcpy(new_mem, old_mem, PAGE_CACHE_SIZE);
++			kunmap(new_page);
++			SetPageUptodate(new_page);
++			kunmap(old_page);
++			unlock_page(old_page);
++			if((rc = write_one_page(new_page, 1))) {
++				printk("COW: had bad rc when writing new page: %d\n", rc);
++				return rc;
++			}
++		}
++		/* modify the struct file so that it appears to have taken this new inode rather than the original */
++		/* this is from examination of __dentry_open */
++		/* sb_list is ok, because it's the same superblock */
++		filp->f_mapping = new_inode->i_mapping;
++		new_inode->i_mapping->nrpages = inode->i_mapping->nrpages;
++		new_inode->i_bytes = inode->i_bytes;
++		new_inode->i_blocks = inode->i_blocks;
++		new_inode->i_size = inode->i_size;
++		/* use the new inode for the future part of this call */
++		*correct_inode = new_inode;
++	}
++	return 0;
++}
++
++
++static int ext4_file_open_old(struct inode * inode, struct file * filp)
+ {
+ 	struct super_block *sb = inode->i_sb;
+ 	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+@@ -186,6 +275,8 @@ static int ext4_file_open(struct inode * inode, struct file * filp)
+ 			ext4_mark_super_dirty(sb);
+ 		}
+ 	}
++
++
+ 	/*
+ 	 * Set up the jbd2_inode if we are opening the inode for
+ 	 * writing and the journal is present
+@@ -210,6 +301,16 @@ static int ext4_file_open(struct inode * inode, struct file * filp)
+ 	return dquot_file_open(inode, filp);
+ }
+ 
++static int ext4_file_open(struct inode *inode, struct file *filp) {
++	struct inode *correct_inode = inode;
++	if(filp->f_mode & FMODE_WRITE) {
++		int rc = check_cow_open(inode, filp, &correct_inode);
++		if(rc != 0)
++			return rc;
++	}
++	return ext4_file_open_old(correct_inode, filp);
++}
++
+ /*
+  * ext4_llseek() copied from generic_file_llseek() to handle both
+  * block-mapped and extent-mapped maxbytes values. This should
+diff --git a/fs/ext4/namei.c b/fs/ext4/namei.c
+index 349d7b3..cb6bdc5 100644
+--- a/fs/ext4/namei.c
++++ b/fs/ext4/namei.c
+@@ -100,6 +100,47 @@ struct dx_entry
+ 	__le32 block;
+ };
+ 
++struct cowstruct {
++	int refcount;
++};
++
++#define COWCOUNT_XATTR XATTR_TRUSTED_PREFIX "cowcounter"
++/* i_mutex must be held */
++int ext4_delta_cowcount(struct inode *node, int delta) {
++	struct cowstruct counter;
++	int sz;
++	sz = ext4_xattr_get(node, EXT4_XATTR_INDEX_TRUSTED, COWCOUNT_XATTR, &counter, sizeof(counter));
++	if(sz < 0) {
++		if(sz == -ENODATA) {
++			/* treat counter as zero */
++			counter.refcount = 0;
++		}
++		else {
++			return sz;
++		}
++	}
++	counter.refcount += delta;
++	sz = ext4_xattr_set(node, EXT4_XATTR_INDEX_TRUSTED, COWCOUNT_XATTR, &counter, sizeof(counter), 0);
++	return sz;
++}
++
++int ext4_get_cowcount(struct inode *node, int *pctr) {
++	struct cowstruct counter;
++	int sz;
++	sz = ext4_xattr_get(node, EXT4_XATTR_INDEX_TRUSTED, COWCOUNT_XATTR, &counter, sizeof(counter));
++	if(sz < 0) {
++		if(sz == -ENODATA) {
++			*pctr = 0;
++			return 0;
++		}
++		else {
++			return sz;
++		}
++	}
++	*pctr = counter.refcount;
++	return 0;
++}
++
+ /*
+  * dx_root_info is laid out so that if it should somehow get overlaid by a
+  * dirent the two low bits of the hash version will be zero.  Therefore, the
+@@ -2342,6 +2383,49 @@ err_drop_inode:
+ 	return err;
+ }
+ 
++int ext4_cowcopy(struct dentry *old_dentry,
++                 struct inode *dir, struct dentry *dentry)
++{
++	handle_t *handle;
++	struct inode *inode = old_dentry->d_inode;
++	int err, retries = 0;
++
++	if (inode->i_nlink >= EXT4_LINK_MAX)
++		return -EMLINK;
++
++	dquot_initialize(dir);
++
++retry:
++	handle = ext4_journal_start(dir, EXT4_DATA_TRANS_BLOCKS(dir->i_sb) +
++					EXT4_INDEX_EXTRA_TRANS_BLOCKS);
++	if (IS_ERR(handle))
++		return PTR_ERR(handle);
++
++	if (IS_DIRSYNC(dir))
++		ext4_handle_sync(handle);
++
++	inode->i_ctime = ext4_current_time(inode);
++	ext4_inc_count(handle, inode);
++	ihold(inode);
++
++	err = ext4_add_entry(handle, dentry, inode);
++	if (!err) {
++		int crc;
++		ext4_mark_inode_dirty(handle, inode);
++		d_instantiate(dentry, inode);
++		/* now to update the refcount */
++		crc = ext4_delta_cowcount(inode, 1);
++		/*printk("COW: QQOMG %d\n", crc);*/
++	} else {
++		drop_nlink(inode);
++		iput(inode);
++	}
++	ext4_journal_stop(handle);
++	if (err == -ENOSPC && ext4_should_retry_alloc(dir->i_sb, &retries))
++		goto retry;
++	return err;
++}
++
+ static int ext4_link(struct dentry *old_dentry,
+ 		     struct inode *dir, struct dentry *dentry)
+ {
+diff --git a/fs/namei.c b/fs/namei.c
+index c427919..056d0ac 100644
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -3468,6 +3468,50 @@ const struct inode_operations page_symlink_inode_operations = {
+ 	.put_link	= page_put_link,
+ };
+ 
++extern int ext4_cowcopy(struct dentry *old_link, struct inode *dir, struct dentry *new_dentry);
++int myvfs_cowcopy(struct dentry *old_link, struct inode *dir, struct dentry *new_dentry)
++{
++	struct inode *inode = old_link->d_inode;
++	unsigned max_links = dir->i_sb->s_max_links;
++	int error;
++
++	if (!inode)
++		return -ENOENT;
++
++	error = may_create(dir, new_dentry);
++	if (error)
++		return error;
++
++	if (dir->i_sb != inode->i_sb)
++		return -EXDEV;
++
++	/*
++	 * A link to an append-only or immutable file cannot be created.
++	 */
++	if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
++		return -EPERM;
++	if (!dir->i_op->link)
++		return -EPERM;
++	if (S_ISDIR(inode->i_mode))
++		return -EPERM;
++
++	error = security_inode_link(old_link, dir, new_dentry);
++	if (error)
++		return error;
++
++	mutex_lock(&inode->i_mutex);
++	/* Make sure we don't allow creating hardlink to an unlinked file */
++	if (inode->i_nlink == 0)
++		error =  -ENOENT;
++	else if (max_links && inode->i_nlink >= max_links)
++		error = -EMLINK;
++	else
++		error = ext4_cowcopy(old_link, dir, new_dentry);
++	mutex_unlock(&inode->i_mutex);
++	if (!error)
++		fsnotify_link(dir, inode, new_dentry);
++	return error;
++}
+ EXPORT_SYMBOL(user_path_at);
+ EXPORT_SYMBOL(follow_down_one);
+ EXPORT_SYMBOL(follow_down);
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 3de3acb..47f76cd 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -858,4 +858,5 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
+ 				      unsigned long riovcnt,
+ 				      unsigned long flags);
+ 
++asmlinkage int sys_ext4_cowcopy(const char __user *src, const char __user *dest);
+ #endif

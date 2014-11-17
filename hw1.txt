@@ -1,0 +1,53 @@
+// a tab is displayed as 4 spaces in answer to question 8
+
+1.1.3	Controlling device level I/O, which is usually slow, takes up much CPU time and context switching, thus reducing efficiency.
+
+2.1.7	(a) Disable all interrupts: will inhibit other programs to use I/O devices
+		(c) Set the time-of-day clock: manipulating by user programs can cause other programs to malfunction
+		(d) Change the memory map: will distort data currently in memory
+
+3.1.13	A trap instruction calls a system procedure in kernel mode to dispatch to a specific system call handler and will return to where it is being called after the kernel procedure completes. It provides an interface between user mode programs and kernel-protected hardware operation or resource management.
+
+4.1.18	fork: insufficient memory
+		exec: bad command, incorrect parameter, or insufficient memory
+		unlink: non-existing file name or i-number
+
+5.1.25	He/she doesn¡¯t have to know if the induced actions will not interfere with other user-groups or programs or I/O devices. But if the calls may induce any conflict, then he/she has to look inside the system call to discover where the problem was initiated.
+
+6. 		a. Disk I/O, CPU time
+		b. Network I/O
+		c. Power consumption, memory
+
+7.
+
+#include <stdio.h>
+
+void backtrace (void){
+	unsigned long long rbp;
+	asm volatile("movq %%rbp,%0" : "=r" (rbp));
+	printf("Stack backtrace:\n");
+	while (rbp != 0){
+		printf("rbp %llu\n", rbp);
+		rbp = * ((unsigned long long *) rbp);
+	}
+}
+// dummy and main are to illustrate and test
+void dummy (void){
+	backtrace();
+}
+
+int main(void){
+	dummy();
+	return 0;
+}
+
+8.												kill,wakeup1
+											 -------------------SLEEPING
+											|						^
+											|						|sleep
+		allocproc			userinit		v		scheduler		|
+UNUSED	<========>	EMBRYO	-------->	RUNNABLE	<========>	RUNNING
+	^	   fork				  fork			^		  yield			|
+	|										|exit					|exit
+	|				wait					|						v
+	-----------------------------------------===================ZOMBIE

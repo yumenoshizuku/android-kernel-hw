@@ -1,0 +1,53 @@
+Group 11:	Chris Narrikkattu (cjn2111)
+			Chandrahas Satsangi (cs3247)
+			Fanxing Meng (fm2438)
+
+We use a struct sthread_sem_struct {
+	volatile unsigned long lock;
+	int sem_count;
+	struct sthread_sem_queueitem *head;
+};
+to store the semaphore with its lock and wait queue on sthread_sem_down.
+
+We model the wait queue as a circular double linked list of queueitem, where the
+next process to be waken is at the head.
+Empty queue are represented as a NULL head.
+We put new sleepers on the tail of the queue for fifo behavior, using the
+sq_push(sthread_sem_t *sem, sem_qitem *p) function that pushes an item p onto
+the end of the queue sem. Processes that are waked up will be poped using the
+function sq_pop(sthread_sem_t *sem, sem_qitem **pitem) in which it pops an item
+from sem, placing it in *pitem.
+
+=> A <=> B <=> C <=
+   *
+after push D:
+=> D <=> A <=> B <=> C <=
+         *
+after pop:
+=> D <=> B <=> C <=
+         *
+The queueitems are allocated on the stack of sthread_sem_down of the sleeping
+threads, thus no need for mallocs and frees. We will thus leave the function
+sthread_sem_destroy empty.
+(thanks to the Linux kernel's sempahore.c for the idea!)
+
+In sthread_sem_init, we initialize the semaphore to its count argument which
+should not be negative, in unlocked status, and has no wait queue items.
+
+In sthread_sem_down, we atomically test the lock in the semaphore struct. The
+process blocks if the semaphore is locked. When unlocked and counter is greater
+than 0, counter would decrease by 1, otherwise it would put itself on the wait
+queue and suspend.
+
+In sthread_sem_try_down, we still atomically test the lock in the semaphore
+struct, but only decrement the counter if it is positive. An error returns
+otherwise.
+
+Finally in sthread_sem_up, when the semaphore is unlocked and the wait queue is
+not empty, the first item of the queue is poped from the queue and awakened.
+Otherwise the counter increments by 1.
+
+To run our test cases, simply use "make" command, then run any of the following:
+./test_basic
+./test_pc
+./test_starve

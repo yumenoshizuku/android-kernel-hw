@@ -1,0 +1,129 @@
+diff --git a/arch/arm/include/asm/unistd.h b/arch/arm/include/asm/unistd.h
+index 512cd14..89d33a6 100644
+--- a/arch/arm/include/asm/unistd.h
++++ b/arch/arm/include/asm/unistd.h
+@@ -404,6 +404,7 @@
+ #define __NR_setns			(__NR_SYSCALL_BASE+375)
+ #define __NR_process_vm_readv		(__NR_SYSCALL_BASE+376)
+ #define __NR_process_vm_writev		(__NR_SYSCALL_BASE+377)
++#define __NR_fail			(__NR_SYSCALL_BASE+378)
+ 
+ /*
+  * The following SWIs are ARM private.
+diff --git a/arch/arm/kernel/Makefile b/arch/arm/kernel/Makefile
+index 22b0f1e..1a38acc 100644
+--- a/arch/arm/kernel/Makefile
++++ b/arch/arm/kernel/Makefile
+@@ -15,7 +15,7 @@ CFLAGS_REMOVE_return_address.o = -pg
+ 
+ # Object file lists.
+ 
+-obj-y		:= elf.o entry-armv.o entry-common.o irq.o opcodes.o \
++obj-y		:= elf.o entry-armv.o entry-common.o fail.o irq.o opcodes.o \
+ 		   process.o ptrace.o return_address.o sched_clock.o \
+ 		   setup.o signal.o stacktrace.o sys_arm.o time.o traps.o
+ 
+diff --git a/arch/arm/kernel/calls.S b/arch/arm/kernel/calls.S
+index 463ff4a..f97b549 100644
+--- a/arch/arm/kernel/calls.S
++++ b/arch/arm/kernel/calls.S
+@@ -387,6 +387,7 @@
+ /* 375 */	CALL(sys_setns)
+ 		CALL(sys_process_vm_readv)
+ 		CALL(sys_process_vm_writev)
++		CALL(sys_fail)
+ #ifndef syscalls_counted
+ .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
+ #define syscalls_counted
+diff --git a/arch/arm/kernel/entry-common.S b/arch/arm/kernel/entry-common.S
+index 54ee265..a618d09 100644
+--- a/arch/arm/kernel/entry-common.S
++++ b/arch/arm/kernel/entry-common.S
+@@ -455,6 +455,24 @@ ENTRY(vector_swi)
+ 	tst	r10, #_TIF_SYSCALL_WORK		@ are we tracing syscalls?
+ 	bne	__sys_trace
+ 
++	bl	should_fail
++
++	/* back up the return value into r10 */
++	mov	r10, r0
++
++	/* restore caller-saved registers */
++	add	r0, sp, #S_R0 + S_OFF
++	ldmia	r0, {r0 - r3}
++
++	/* check the return value stored in r10 */
++	cmp	r10, #0
++	beq	no_failure
++
++	/* fail the system call */
++	adr	lr, BSYM(ret_fast_syscall)  @ return address
++	ldr	pc, =fail_syscall
++
++no_failure:
+ 	cmp	scno, #NR_syscalls		@ check upper syscall limit
+ 	adr	lr, BSYM(ret_fast_syscall)	@ return address
+ 	ldrcc	pc, [tbl, scno, lsl #2]		@ call sys_* routine
+diff --git a/arch/arm/kernel/fail.c b/arch/arm/kernel/fail.c
+new file mode 100644
+index 0000000..ebb76a9
+--- /dev/null
++++ b/arch/arm/kernel/fail.c
+@@ -0,0 +1,33 @@
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/syscalls.h>
++
++long should_fail(void){
++	if(current->syscallcount > 1){
++		current->syscallcount -= 1;
++		return 0;
++	}
++	else if(current->syscallcount == 1){
++		current->syscallcount = 0;
++		return (-1);
++	}
++	else
++		return 0;
++}
++
++long fail_syscall(void){
++	return (-EAGAIN);
++}
++
++asmlinkage int sys_fail(int N){
++	if(N > 0){
++		current->syscallcount = N;
++		return 0;
++	}
++	else if(N == 0 && current->syscallcount >= 1){
++		current->syscallcount = 0;
++		return 0;
++	}
++	else
++		return (-EINVAL);
++}
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index ff6bb0f..1cecb61 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1269,6 +1269,7 @@ struct task_struct {
+ 	atomic_t usage;
+ 	unsigned int flags;	/* per process flags, defined below */
+ 	unsigned int ptrace;
++	int syscallcount;
+ 
+ #ifdef CONFIG_SMP
+ 	struct llist_node wake_entry;
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 0de735c..1f186c1 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -1222,6 +1222,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ 	INIT_LIST_HEAD(&p->sibling);
+ 	rcu_copy_process(p);
+ 	p->vfork_done = NULL;
++	p->syscallcount = 0;
+ 	spin_lock_init(&p->alloc_lock);
+ 
+ 	init_sigpending(&p->pending);

@@ -1,0 +1,278 @@
+diff --git a/arch/arm/include/asm/unistd.h b/arch/arm/include/asm/unistd.h
+index 512cd14..bf5081c 100644
+--- a/arch/arm/include/asm/unistd.h
++++ b/arch/arm/include/asm/unistd.h
+@@ -404,6 +404,8 @@
+ #define __NR_setns			(__NR_SYSCALL_BASE+375)
+ #define __NR_process_vm_readv		(__NR_SYSCALL_BASE+376)
+ #define __NR_process_vm_writev		(__NR_SYSCALL_BASE+377)
++#define __NR_netlock_acquire		(__NR_SYSCALL_BASE+378)
++#define __NR_netlock_release		(__NR_SYSCALL_BASE+379)
+ 
+ /*
+  * The following SWIs are ARM private.
+diff --git a/arch/arm/kernel/calls.S b/arch/arm/kernel/calls.S
+index 463ff4a..413cb65 100644
+--- a/arch/arm/kernel/calls.S
++++ b/arch/arm/kernel/calls.S
+@@ -387,6 +387,8 @@
+ /* 375 */	CALL(sys_setns)
+ 		CALL(sys_process_vm_readv)
+ 		CALL(sys_process_vm_writev)
++       CALL(sys_netlock_acquire)
++       CALL(sys_netlock_release)
+ #ifndef syscalls_counted
+ .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
+ #define syscalls_counted
+diff --git a/include/linux/netlock.h b/include/linux/netlock.h
+new file mode 100644
+index 0000000..8a29fbb
+--- /dev/null
++++ b/include/linux/netlock.h
+@@ -0,0 +1,13 @@
++#ifndef __NETLOCK_H_
++#define __NETLOCK_H_
++
++enum __netlock_t 
++{
++	NET_LOCK_N, /* Placeholder for no lock */
++	NET_LOCK_R, /* Indicates regular lock */
++	NET_LOCK_E, /* Indicates exclusive lock */
++};
++
++typedef enum __netlock_t netlock_t;
++
++#endif  // __NETLOCK_H_
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index ff6bb0f..31e9ea1 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -90,6 +90,7 @@ struct sched_param {
+ #include <linux/latencytop.h>
+ #include <linux/cred.h>
+ #include <linux/llist.h>
++#include <linux/netlock.h>
+ 
+ #include <asm/processor.h>
+ 
+@@ -1619,6 +1620,7 @@ struct task_struct {
+ #ifdef CONFIG_HAVE_HW_BREAKPOINT
+ 	atomic_t ptrace_bp_refcnt;
+ #endif
++	netlock_t lock_type;
+ };
+ 
+ /* Future-safe accessor for struct task_struct's cpus_allowed. */
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 3de3acb..2090043 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -858,4 +858,7 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
+ 				      unsigned long riovcnt,
+ 				      unsigned long flags);
+ 
++asmlinkage int netlock_acquire(netlock_t type);
++asmlinkage int netlock_release(void);
++
+ #endif
+diff --git a/kernel/Makefile b/kernel/Makefile
+index cb41b95..85630e7 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,7 @@ obj-y     = fork.o exec_domain.o panic.o printk.o \
+ 	    kthread.o wait.o kfifo.o sys_ni.o posix-cpu-timers.o mutex.o \
+ 	    hrtimer.o rwsem.o nsproxy.o srcu.o semaphore.o \
+ 	    notifier.o ksysfs.o cred.o \
+-	    async.o range.o groups.o
++	    async.o range.o groups.o netlock.o
+ 
+ ifdef CONFIG_FUNCTION_TRACER
+ # Do not trace debug files and internal ftrace files
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 6096e80..6e26875 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -53,6 +53,7 @@
+ #include <linux/oom.h>
+ #include <linux/writeback.h>
+ #include <linux/shm.h>
++#include <linux/netlock.h>
+ 
+ #include <asm/uaccess.h>
+ #include <asm/unistd.h>
+@@ -981,6 +982,11 @@ void do_exit(long code)
+ 	tsk->exit_code = code;
+ 	taskstats_exit(tsk, group_dead);
+ 
++	if( tsk->lock_type != NET_LOCK_N )
++	{
++		netlock_release();
++	}
++
+ 	exit_mm(tsk);
+ 
+ 	if (group_dead)
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 0de735c..37b2649 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -68,6 +68,7 @@
+ #include <linux/oom.h>
+ #include <linux/khugepaged.h>
+ #include <linux/signalfd.h>
++#include <linux/netlock.h>
+ 
+ #include <asm/pgtable.h>
+ #include <asm/pgalloc.h>
+@@ -1222,6 +1223,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ 	INIT_LIST_HEAD(&p->sibling);
+ 	rcu_copy_process(p);
+ 	p->vfork_done = NULL;
++	p->lock_type = NET_LOCK_N;
+ 	spin_lock_init(&p->alloc_lock);
+ 
+ 	init_sigpending(&p->pending);
+diff --git a/kernel/netlock.c b/kernel/netlock.c
+new file mode 100644
+index 0000000..6451a54
+--- /dev/null
++++ b/kernel/netlock.c
+@@ -0,0 +1,138 @@
++#include <linux/syscalls.h>
++#include <linux/list.h>
++#include <linux/wait.h>
++#include <linux/spinlock.h>
++#include <linux/netlock.h>
++
++#define NETLOCK_SUCCESS 0
++#define NETLOCK_FAILURE -1
++#define NETLOCK_WRITER_CONDITION \
++		netlock.lock != NET_LOCK_E && netlock.reader_count == 0
++#define NETLOCK_READER_CONDITION \
++		netlock.lock != NET_LOCK_E && list_empty(&writer_queue.task_list)
++
++struct __netlock_lock_t
++{ 
++	int reader_count;
++	netlock_t lock;
++};
++
++/* File scope variables */
++static struct __netlock_lock_t netlock = { .reader_count = 0, .lock = NET_LOCK_N };
++static DEFINE_SPINLOCK(net_spinlock);
++static DECLARE_WAIT_QUEUE_HEAD(reader_queue);
++static DECLARE_WAIT_QUEUE_HEAD(writer_queue);
++
++/* 
++   Syscall 378. Acquire netlock. 
++   Type indicates whether a regular or exclusive lock is needed. 
++   Returns 0 on success and -1 on failure.  
++*/
++asmlinkage int netlock_acquire(netlock_t type)
++{
++	int ret_value = NETLOCK_FAILURE;
++
++	if( current->lock_type != NET_LOCK_N )
++	{
++		/* ASSUMPTION: If you already hold a lock, you can't acquire another one */
++		ret_value = NETLOCK_FAILURE;
++	}
++	else if( type == NET_LOCK_E && NETLOCK_WRITER_CONDITION )
++	{
++		spin_lock( &net_spinlock );
++		current->lock_type = type;
++		netlock.lock = NET_LOCK_E;
++		spin_unlock( &net_spinlock );
++
++		ret_value = NETLOCK_SUCCESS;
++	}
++	else if( type == NET_LOCK_E )
++	{
++		/* Use exclusive since we only want to wake up 1 writer */
++		__wait_event_interruptible_exclusive( writer_queue, 
++   					              NETLOCK_WRITER_CONDITION, 
++						      ret_value );	
++		
++		if( NETLOCK_WRITER_CONDITION )
++		{
++			spin_lock( &net_spinlock );
++			current->lock_type = type;
++			netlock.lock = NET_LOCK_E;
++			spin_unlock( &net_spinlock );
++		
++			ret_value = NETLOCK_SUCCESS;	
++		}
++	}
++	else if( type == NET_LOCK_R && NETLOCK_READER_CONDITION )
++	{
++		spin_lock( &net_spinlock );
++		current->lock_type = type;
++		++netlock.reader_count;
++		spin_unlock( &net_spinlock );
++
++		ret_value = NETLOCK_SUCCESS;
++	}
++	else if( type == NET_LOCK_R )
++	{
++		/* Not exclusive since we want to wake up all readers */
++		__wait_event_interruptible( reader_queue, 
++   					    NETLOCK_READER_CONDITION, 
++					    ret_value );
++
++		if( NETLOCK_READER_CONDITION )
++		{
++			spin_lock( &net_spinlock );
++			current->lock_type = type;
++			++netlock.reader_count;
++			spin_unlock( &net_spinlock );
++
++			ret_value = NETLOCK_SUCCESS;
++		}
++	}
++	
++	return ret_value;
++}
++
++/* 
++   Syscall 379. Release netlock. 
++   Return 0 on success and -1 on failure.  
++*/
++asmlinkage int netlock_release(void)
++{
++	int ret_value = NETLOCK_FAILURE;
++
++	if( current->lock_type == NET_LOCK_R )
++	{
++		spin_lock( &net_spinlock );
++		--netlock.reader_count;
++		current->lock_type = NET_LOCK_N;
++		spin_unlock( &net_spinlock );
++
++		if( !list_empty(&writer_queue.task_list) && netlock.reader_count == 0 )
++		{
++			wake_up_interruptible( &writer_queue );
++		}
++					
++		ret_value = NETLOCK_SUCCESS;
++	}
++	else if( current->lock_type == NET_LOCK_E )
++	{
++		spin_lock( &net_spinlock );
++		netlock.lock = NET_LOCK_N;
++		current->lock_type = NET_LOCK_N;
++		spin_unlock( &net_spinlock );
++		
++		if( !list_empty(&writer_queue.task_list) )
++		{
++			wake_up_interruptible( &writer_queue );
++		}
++		else
++		{
++			wake_up_interruptible( &reader_queue );
++		}		
++		
++		ret_value = NETLOCK_SUCCESS;
++	}
++	
++	return ret_value;	
++}

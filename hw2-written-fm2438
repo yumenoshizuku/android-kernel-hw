@@ -1,0 +1,75 @@
+1.
+    |           |
+    |-----------|
+    |   *new    |   -> %edx
+    |-----------|
+    |   **old   |   -> %eax
+    |-----------|
+    |  old %eip |
+    |-----------|
+    |  old %ebp |
+    |-----------|
+    |  old %ebx |
+    |-----------|
+    |  old %esi |
+    |-----------|
+    |  old %edi |
+    |-----------|   <- %esp -> **old
+
+2.
+Regular user program: Level 3, since this is the lowest possible level, thus
+it will not be able to manipulate on shared libraries, systems calls or kernel.
+Program started by superuser: Level 0, since a superuser may have the need to
+control file access rights or I/O port mapping
+
+3.
+strace
+(1)	openat(2)
+
+(2)	getdents(2)
+
+(3)	write(2)
+
+ltrace
+(1)	opendir(3)
+
+(2)	readdir(3)
+
+(3)	fwrite_unlocked(3)
+
+4.
+Because when an interrupt or system call happens, the system would want the
+current process to block until all system procedures have been completed.
+After that the process would become runnable again and should feel as if no
+interrupt has occurred and resume to its work. Thus it is better to have the
+kernel handle all the bookkeeping information instead of the process itself.
+
+5.
+No, because when a process is waiting for keyboard interrupt, is has to be
+in blocked condition, under which it cannot be forked.
+
+6.
+Yes, if the starting order of two simulated processes could change randomly,
+and that the simulator tries to run them in a time-sharing fashion, then
+race condition could still occur if they read and write to shared variables.
+
+7.
+(1)	M >= 4096 / sizeof(int) && N >= M * 64
+
+(2)	Yes, if the loop would repeat, then it requires larger N such that when
+one loop finishes, none of the pages in TLB would contain the first
+4096 / sizeof(int) * 64 pages of the array. If TLB replacement is done by
+FIFO or LRU policy, then N >= 2 * M * 64 suffices. If using random replacement,
+suppose when the first 64 pages are in TLB, then the average number of kick-outs
+that have to be performed to remove all first 64 pages would be
+(64/64) * (64/63) * (64/62) * (64/61) * ... * (64/1) ~ 3.1e26 pages, meaning
+N > 4096 / sizeof(int) * 3.1e26
+
+8.
+(1)	2 ^ 36 = 68719476736 entries, because the page table has to be able to
+store all existing pages, which is 2 ^ 48 / 2 ^ 12 = 2 ^ 36 pages.
+
+(2)	The instruction code page will always reside in the TLB, while for every
+new page the program reads, a TLB miss would occur, but for the following
+4096 / sizeof(long int) -1 the TLB would hit.
+

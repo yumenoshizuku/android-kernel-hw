@@ -1,0 +1,3 @@
+LOCAL_MODULE    := hw5
+LOCAL_SRC_FILES := hw5.c
+

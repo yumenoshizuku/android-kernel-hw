@@ -1,0 +1,410 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html><head>
+    <meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+
+    <title>OPERATING SYSTEMS I: Junfeng Yang</title>
+    <link rel="stylesheet" type="text/css" href="../style.css">
+    <style type="text/css"></style>
+</head>
+
+<body>
+
+  <!--- BEGIN PREFIX --->
+
+  <table>
+    <tr>
+      <td id="logo">
+        <a href="http://www.cs.columbia.edu">
+          <img src="http://www.cs.columbia.edu/images/cscu.jpg" 
+               alt="Columbia CS"
+               border=0px />
+        </a>
+      </td>
+      
+      <td>
+        <div id="title">
+          <h1> W4118 OPERATING SYSTEMS I </h1>
+          <h2> Fall 2013 -- Junfeng Yang </h2>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <div id="separator"></div>
+  
+  <!--- MENU --->
+  <div id="menu">
+    <div> <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/index.html"> Home </a> </div>
+    <div> <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/syllabus.html">Syllabus</a> </div>
+    <div> <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/homework.html">Homework</a> </div>
+    <div> <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/policies.html">Policies</a> </div>
+    <div> <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/grades.html">Grades</a> </div>
+    <div> <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/tools.html">Tools</a> </div>
+    <div> <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/resources.html">Resources</a> </div>
+  </div>
+  <!--- MENU --->
+  <!--- END PREFIX --->
+
+  <div id="content">
+
+    <p class="important"> DUE: Thu 10/17 at 12:05 AM ET.</p>
+
+    <p>The written problems are to be done individually. The programming
+    problems are to be done in your assigned groups. All homework submissions are to be made
+    via <a href="http://courseworks.columbia.edu">Courseworks</a>. Refer
+    to <a href="../policies.html#programming">the homework policy
+    section</a> on the class web site for further details. </p>
+
+    <h3> Written Assignment (40 pts) </h3>
+
+<P> Exercise numbers refer to the course textbook, Modern Operating
+  Systems(3rd edition).  Each problem is worth 5 points.  Make your
+  answers concise. You'll lose points for verbosity. </P>
+
+<OL>
+
+  <li>MOS 2.13 (assume uniprocessor and disk with unlimited bandwidth) <p></p>In this problem your are to compare reading a file using a single-threaded file server and a multithreaded server. It takes 15 msec to get a request for work, dispatch it, and do the rest of the necessary processing, assuming that the data needed are in the block cache. If a disk operation is needed, as is the case one-third of the time, and additional 75msec is required, during which time the thread sleeps. How many requests/sec can the server handle if it is single threaded? If it is multithreaded?<p/></li>
+
+  <LI>MOS 2.26 <p></p>Show how counting semaphores(i.e., semaphores that can hold an arbitrary value) can be implemented using only binary semaphores and ordinary machine instructions.<p/></LI>
+
+  <LI>MOS 2.29 <p></p>Synchronization within monitors uses condition variables and two special operations <tt>wait</tt> and <tt>signal</tt>. A more general form of synchronization would be to have a single primitive <tt>waituntil</tt>, that had an arbitrary Boolean predicate as parameter. Thus one could say, for example,<p/><tt>waituntil x&lt;0 or y+z&lt;n</tt>  <p></p>
+  The <tt>signal</tt> primitive would no longer be needed. This scheme is clearly more general then that of Hoare or Brinch Hansen, but it is not uses. Why not? Hint: Think about the implementation.<p/></LI>
+
+  <LI>MOS 2.46 (use figure 2-46 instead of 2-20) <p></p>
+  Consider the procedure <tt>put_forks</tt> in Fig. 2-46. Suppose that the variable <tt>state[i]</tt> was set to THINKING after the two calls to <tt>test</tt>, rather than <tt>before</tt>. How would this change affect the solution?</p></LI>
+
+  <LI>MOS 2.50 <p></p>
+  Solve the dining philosophers problem using monitors instead of semaphores.</p></LI>
+
+  <LI>MOS 2.51 <p></p>
+  Suppose that a university wants to show off how politically correct it is by applying the U.S. Supreme Court's "Separate but equal is inherently unequal" doctrine in gender as well as race, ending its long-standing practice of gender-segregated bathrooms on campus. However, as a concession to tradition, it decrees that when a woman is in a bathroom, other women may enter, but no men, and vice versa. A sign with a sliding marker on the door of each bathroom indicates which of three possible states it is currently in: <tt>Empty</tt>, <tt>Women present</tt>, <tt>Men present</tt>. In some programming language you like, write the following procedures <tt>woman_wants_to_enter, man_wants_to_enter, woman_leaves, man_leaves.</tt> You may use whatever counters and synchronization techniques you like.</p></LI>
+
+  <LI> <p> Draw a thread schedule with two threads to show the error in
+      the following software-based lock implementation.</p>
+    <pre>
+      int flag[2] = {0, 0}; // lock flags, one for each thread.  
+                            // 1 indicates a thread wants to enter 
+                            // the critical region; 0 indicates it doesn't
+
+      lock()
+      {
+          flag[self] = 1;        // self is the current thread's ID.
+          while(flag[1-self]==1) // 1-self is the other thread's ID
+              ;
+      }
+
+      unlock()
+      {
+          flag[self] = 0;
+      }
+    </pre><p></p>
+	</LI>
+
+  <LI> Will Eraser report a race on the following code?  Why or why
+    not?  Read about "bitfield" in 'K&R' if you don't know what it is.
+<pre>
+        struct {
+            lock l1;
+            lock l2;
+            int f1:1; // bitfield, uses only 1 bit
+            int f2:1; // bitfield, uses only 1 bit
+        } s;
+
+        // thread T1         // thread T2
+        lock(s.l1);          lock(s.l2);      
+        s.f1 = 1;            s.f2 = 1;    
+        unlock(s.l1);        unlock(s.l2);
+</pre>
+        <p></p>
+    </LI>
+</OL>
+
+    <h3> Group Programming Assignment (60 pts) </h3>
+
+    <p> This programming assignment has two parts.  In Part A, you'll
+      extend a simple user space threading library to support semaphores; in Part B, 
+      you'll implement a readers-writer lock in the linux kernel that favors writers.
+      For part A, we will provide you the files that you can get started with
+      (see below). For part B, you will use the same development environment as 
+      you did in HW2 by setting up your environment by following the instructions 
+      <a href="http://www.cs.columbia.edu/~junfeng/13fa-w4118/hw/kernel.html">
+      here</a>. Make sure you start with a new kernel without your changes from 
+      HW2.</p>
+
+    <P>For the user threads package part of this assignment, be sure to Submit a 
+	Makefile and a README file with your code. The Makefile should have at least a 
+	default target that builds all assigned programs. The README should explain the 
+	details of your solution, describe any way in which your solution differs from 
+	what was assigned, and state any assumptions you made (5 pts). Also, use the 
+	<KBD>-Wall</KBD> option to gcc when compiling. You will lose points if 
+	<I>your</I> code produces warnings when compiled.</P>
+
+	<p> For the kernel part, commit your source code changes using the 
+        <tt>git add</tt> and <tt>git commit</tt> commands you learned from the 
+        previous assignment. Remember to add your new file to the code repository.
+        Then use the <tt>git diff</tt> command to get the code change. You should
+        compare with the original version, so please do</p>
+        <pre>    git diff 365a6e06</pre>
+
+ <p>Here <tt>365a6e06</tt> refers to the initial version of the kernel
+ source before you make any modifications.  Then submit the code
+ difference in a .patch file. The file name should be hw3-group&lt;your
+ group&gt;-code.patch.</p>
+
+    <h4> Part A: Synchronization and threads in userspace (25 pts) </h4>
+
+    <P>In this problem you will add synchronization functionality to the 
+  implementation of <EM>SThreads</EM>, a simple threading library. Get the 
+  source files found in <A 
+  href=sthread>this 
+  directory</A>. The files provide the source, header, and Makefile for the 
+  SThreads library. The publicly available functions and datatypes are in the file 
+  <CODE>sthread.h</CODE>. The library is used as follows: </P>
+  <UL>
+    <LI>
+    <P>Threads are manipulated using variables of type <CODE>sthread_t</CODE>. 
+    Consider <CODE>sthread_t</CODE> to be an opaque data type (i.e. only 
+    functions in <CODE>sthread.c</CODE> get to know what it really is). </P>
+    <LI>
+    <P><CODE>sthread_init()</CODE> must be called exactly once, as the first 
+    thing in <CODE>main()</CODE>. It returns 0 normally, and -1 on error. </P>
+    <LI>
+    <P>A new thread is created using the function: </P>
+    <P><CODE>int sthread_create(sthread_t *t, sthread_main_t main, void 
+    *arg)</CODE>. </P>
+    <P>The first argument is where the <CODE>sthread_t</CODE> object is 
+    returned. The second is the function the new thread should run. The third 
+    argument is passed to this function. <CODE>sthread_create()</CODE> returns 0 
+    normally and -1 on error. </P>
+    <LI>
+    <P>You are also provided with <CODE>sthread_self()</CODE>, which returns the 
+    <CODE>sthread_t</CODE> associated with the currently running thread, as well 
+    as <CODE>sthread_suspend()</CODE>, which puts the currently running thread 
+    to sleep, and <CODE>sthread_wake(sthread_t t)</CODE>, which wakes up a 
+    thread, given the thread's <CODE>sthread_t</CODE> object. Note that for the 
+    SThreads library, first waking up a running thread and then suspending it 
+    leaves the thread in a running state. </P>
+    <LI>
+    <P>Usage example: </P>
+    <TABLE border=1>
+      <TBODY>
+      <TR>
+        <TD><PRE>#define _REENTRANT
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;unistd.h&gt;
+#include "sthread.h"
+
+int
+threadmain(void *arg)
+{
+  int threadno = (int)arg;
+  for (;;) {
+    printf("thread %d: I'm going to sleep\n", threadno);
+    sthread_suspend();
+    printf("thread %d: I woke up!\n", threadno);
+  }
+  return 0;
+}
+
+int
+main(int argc, char *argv[])
+{
+  sthread_t thr1, thr2;
+
+  if (sthread_init() == -1)
+    fprintf(stderr, "%s: sthread_init: %s\n", argv[0], strerror(errno));
+
+  if (sthread_create(&amp;thr1, threadmain, (void *)1) == -1)
+    fprintf(stderr, "%s: sthread_create: %s\n", argv[0], strerror(errno));
+
+  if (sthread_create(&amp;thr2, threadmain, (void *)2) == -1)
+    fprintf(stderr, "%s: sthread_create: %s\n", argv[0], strerror(errno));
+
+  sleep(1);
+  sthread_wake(thr1);
+  sleep(1);
+  sthread_wake(thr2);
+  sleep(1);
+  sthread_wake(thr1);
+  sthread_wake(thr2);
+  sleep(1);
+
+  return 0;
+}
+</PRE></TD></TR></TBODY></TABLE></LI></UL>
+  <P>Note the <CODE>#define&nbsp;_REENTRANT</CODE> at the top of the file. This 
+  is necessary in any multithreaded program, as it tells subsequent include 
+  files to use reentrant versions of library functions and thread-safe 
+  variables. For example, the <CODE>errno</CODE> variable, since it is a global 
+  variable, is normally not thread-safe. A function in thread A can set it on 
+  error, and thread B can set it to something else before the caller in thread A 
+  ever gets to read the value. This is an example of a <EM>race condition</EM>. 
+  If you <CODE>#define&nbsp;_REENTRANT</CODE>, though, <CODE>errno</CODE> is 
+  redefined to <CODE>(*__errno_location())</CODE>, which references a different 
+  address for each thread. An implementation of this function is provided in 
+  <CODE>sthread.c</CODE>. </P>
+  <P>You will also be provided with the function <CODE>test_and_set(int 
+  *x)</CODE>, which atomically sets the integer that x points to to 1, and 
+  returns its previous value. Using <CODE>sthread_suspend()</CODE>, 
+  <CODE>sthread_wake()</CODE>, and <CODE>test_and_set()</CODE>, you are to 
+  implement the missing semaphore primitives in the SThreads library. </P>
+  <P>You may use <CODE>test_and_set()</CODE> to implement spinlocks, in which 
+  you repeatedly call <CODE>test_and_set()</CODE> and a no-op in a tight loop, 
+  waiting for the test result to be 0. <CODE>sched_yield()</CODE> is a good 
+  no-op function to use, but you don't have to worry about precisely what it 
+  does (not until the next homework, anyway!). Note that you can use spinlocks 
+  to synchronize access on your semaphores' shared data structures, but not to 
+  implement the semaphores themselves. In other words, if I call 
+  <CODE>sthread_sem_down()</CODE> on an unavailable semaphore (the count of the semaphore is negative or 0), I should suspend 
+  rather than spinning until the semaphore is available (the count of the semaphore is positive). </P>
+
+  <div class="exercise"><b>Exercise 1.</b> Understand the SThreads
+    library. Run the usage example and understand why a particular
+    sequence of output messages is generated by the execution.  </div>
+
+  <P>Now comes the fun part. For this assignment, implement counting semaphores in the 
+  SThreads library. Put your function implementations in a single file, called 
+  <CODE>sync.c</CODE>, and your structure definitions in <CODE>sync.h</CODE>. 
+  Skeleton files are provided, but you may have to add functions and datatypes 
+  to these files. You shouldn't have to change <CODE>sthread.c</CODE> or 
+  <CODE>sthread.h</CODE>. In fact, you shouldn't even have to look at the 
+  implementations of the functions in <CODE>sthread.c</CODE> (but feel free if 
+  you want to, of course). Unless otherwise noted, all functions should return 0 
+  on success and -1 on error. </P>
+  <P>The prototypes for the five functions you must implement are found in 
+  <CODE>sync.h</CODE>, and are all named <CODE>sthread_sem_*</CODE>. You must 
+  define <CODE>struct sthread_sem_struct</CODE>. 
+  <CODE>sthread_sem_init(sthread_sem_t *sem, int count)</CODE> and <CODE>sthread_sem_destroy()</CODE> 
+  should be used to initialize and free resources related to this struct. 
+  The argument <CODE>int count</CODE> in <CODE>sthread_sem_init(sthread_sem_t *sem, int count)</CODE> indicates the count of the semaphore.
+  The value of <CODE>int count</CODE> could be any positive number.</P>
+  
+  <P><CODE>sthread_sem_down()</CODE> will decrement the semaphore by 1 if the value of which is greater than 0 (these two steps must be atomic),
+  	or it will block until another thread releases the semaphore and wakes it up. 
+	<CODE>sthread_sem_up()</CODE> will increment the value of semaphore 
+	by 1 if nobody is being blocked on it; if there are threads waiting for the semaphore, it should wake up one of the waiting
+	threads; these two steps must also be atomic. <CODE>sthread_sem_try_down()</CODE> should obtain the semaphore and return 
+  0 if the semaphore is available, otherwise return non-zero immediately. This 
+  function does not cause the caller to block. </P>
+
+  <div class="exercise"><b>Exercise 2.</b> Implement semaphores in the
+    SThreads library. </div>
+
+  <P>Note that your implementation should not allow starvation of any
+  thread waiting for the semaphore. That is, if two threads are repeatedly
+  obtaining and releasing a semaphore, that should not prevent a third
+  thread from eventually getting the semaphore. (Of course, if one thread
+  never release the semaphore, the others will starve, but that's a
+  programming error, i.e. not our problem!) </P>
+  
+  <div class="exercise"><b>Exercise 3.</b> Write a few testcases to test
+  your semaphore implementation. </div>
+
+  <P><STRONG>Part B: Synchronization in the Linux kernel (35 pts) </STRONG> </P>
+
+  <P> Energy consumption is a critical issue when designing mobile applications.
+  Data transfer over cellular radio networks is one of the most energy intensive 
+  operations on mobile devices, and so cellular protocols such as 3G (HSPA) and
+  LTE are designed to allow phones to keep their radio transmitters and receivers
+  turned off when they are not needed. </P>
+
+  <P> When the battery life of a mobile device is below a certain critical level,
+  we might want to restrict which processes can access the network. If non-critical
+  applications (e.g. social network updates) can be blocked from accessing the 
+  network when power supply is limited, the mobile device can have a potentially
+  longer operation span. This functionality can be achieved if every process
+  that wishes to use the network needs to acquire a read lock, and a process
+  that monitors the device battery life can obtain an exclusive lock if the battery
+  life is below a critical level. When such a
+  process acquires an exclusive lock, no other process can acquire a regular lock,
+  which blocks subsequent process from accessing the network.</P>
+
+  <P>For this problem, you will implement a regular-exclusive (reader-writer) "net-lock"
+  kernel synchronization primitive that prioritizes exclusive lock holders over 
+  regular lock holders. The locking primitive should be implemented in 
+  <CODE>kernel/netlock.c</CODE> file, and should export the following system calls
+  to acquire and release the net lock: </P>
+
+  <pre>
+     /* Syscall 378. Acquire netlock. <code>type</code> indicates
+        whether a regular or exclusive lock is needed. Returns 0 on success 
+	and -1 on failure.  
+      */
+     int netlock_acquire(netlock_t type);
+
+     /* Syscall 379. Release netlock. Return 0 on success and -1 on failure.  
+      */
+     int netlock_release(void);
+
+     enum __netlock_t {
+        NET_LOCK_N, /* Placeholder for no lock */
+	NET_LOCK_R, /* Indicates regular lock */
+	NET_LOCK_E, /* Indicates exclusive lock */
+     } ;
+     typedef enum __netlock_t netlock_t;
+  </pre>
+
+  <P> The specification for this part is as follows. You may assume that all
+  processes that intend to use the network must call <code>netlock_acquire</code>
+  in regular (read) mode. The calls to acquire the lock in regular mode should
+  succeed immediately as long as no process is holding an exclusive (write) lock
+  or is waiting for an exclusive lock. Multiple processes may request the lock in 
+  regular mode, and all of them should be granted the lock if this condition is
+  met. If a process is currently holding or waiting for an exclusive lock, 
+  subsequent calls to <code>netlock_acquire</code> in regular mode must block.
+  All processes waiting for regular locks must be granted the lock once the 
+  condition for granting the regular locks is fulfilled.</P>
+
+  <P> Only one process may hold an exclusive lock at any given time.
+  When a process requests an exclusive lock, it must wait until processes
+  currently holding regular or exclusive locks release the locks using the 
+  <code>netlock_release</code> system call. Processes requesting an exclusive
+  lock get priority over processes waiting to get regular locks. If multiple
+  processes request exclusive locks, they should be granted locks in the order
+  of their request.</P>
+
+  <p>Read LKD Ch. 4, pg 58-61 to learn about wait queues.  Read LKD Ch. 9
+  and Ch. 10 to understand Linux synchronization methods.  Note that
+  unlike the userspace semaphores you implemented for question 1, the
+  synchronization primitives in Linux generally do not have owners and are
+  not recursive. No owners means that there's nothing stopping any piece
+  of code from unlocking every lock in the kernel (and bringing the kernel
+  to a fiery screeching halt, probably). Not recursive means that the
+  owner of a lock (even if there was such a thing) can't obtain the lock
+  twice. </p>
+    
+  <div class="exercise"><b>Exercise 4.</b> Implement net-lock in
+    Linux. For the purpose of this assignment, your implementation
+    shouldn't use the Linux kernel's reader-writer spin-locks or
+    reader-writer semaphores.</div>
+    
+<p> Note that your implementation must <b>favor writers over readers</b>:
+  whenever there is a thread waiting to acquire the lock in write mode,
+  you should let this thread acquire the lock as soon as possible, To
+  illustrate this point, consider the following example.  Suppose the lock
+  is held in read mode and a thread A is waiting to acquire the lock in
+  write mode.  Another thread B comes, trying to acquire the lock in read
+  mode.  In an implementation that favors readers over writers, thread B
+  can immediately acquire the lock in read mode and proceed.  However, in
+  your implementation, thread B must wait and thread A should grab the
+  lock first. </p>
+
+  <div class="exercise"><b>Exercise 5.</b> Write a few testcases to test
+    your net-lock implementation. Your testcases should run in user-space
+    (see the testcase of the last programming assignment).</div>
+    
+<p>Once the net-lock is implemented, we can modify the Linux kernel's
+  network-related code to allow only processes holding the net-lock to
+  send or receive packets.  We do not require you to implement this
+  functionality because understanding and modifying network-related code
+  is outside the scope of this assignment.  However, we welcome you to
+  give it a try.  If you figure out how to implement this functionality,
+  be sure to let us know by emailing your patch or design to the course
+  staff mailing list. </p>
+
+  </div> <!--- content --->
+
+</body>
+</html>

@@ -1,0 +1,330 @@
+diff --git a/arch/arm/include/asm/unistd.h b/arch/arm/include/asm/unistd.h
+index 512cd14..b83a8ea 100644
+--- a/arch/arm/include/asm/unistd.h
++++ b/arch/arm/include/asm/unistd.h
+@@ -404,6 +404,7 @@
+ #define __NR_setns			(__NR_SYSCALL_BASE+375)
+ #define __NR_process_vm_readv		(__NR_SYSCALL_BASE+376)
+ #define __NR_process_vm_writev		(__NR_SYSCALL_BASE+377)
++#define __NR_set_mlimit 		(__NR_SYSCALL_BASE+378)
+ 
+ /*
+  * The following SWIs are ARM private.
+diff --git a/arch/arm/kernel/calls.S b/arch/arm/kernel/calls.S
+index 463ff4a..75c303c 100644
+--- a/arch/arm/kernel/calls.S
++++ b/arch/arm/kernel/calls.S
+@@ -387,6 +387,7 @@
+ /* 375 */	CALL(sys_setns)
+ 		CALL(sys_process_vm_readv)
+ 		CALL(sys_process_vm_writev)
++                CALL(sys_set_mlimit)
+ #ifndef syscalls_counted
+ .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
+ #define syscalls_counted
+
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 3de3acb..76a73b4 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -858,4 +858,6 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
+ 				      unsigned long riovcnt,
+ 				      unsigned long flags);
+ 
++asmlinkage int sys_set_mlimit(uid_t uid, long mem_max);
++
+ #endif
+diff --git a/kernel/user.c b/kernel/user.c
+index 71dd236..91ffbae 100644
+--- a/kernel/user.c
++++ b/kernel/user.c
+@@ -59,6 +59,7 @@ struct user_struct root_user = {
+ 	.sigpending	= ATOMIC_INIT(0),
+ 	.locked_shm     = 0,
+ 	.user_ns	= &init_user_ns,
++	.mem_max        = -1
+ };
+ 
+ /*
+@@ -152,7 +153,7 @@ struct user_struct *alloc_uid(struct user_namespace *ns, uid_t uid)
+ 
+ 		new->uid = uid;
+ 		atomic_set(&new->__count, 1);
+-
++		new->mem_max = -1;
+ 		new->user_ns = get_user_ns(ns);
+ 
+ 		/*
+diff --git a/mm/Makefile b/mm/Makefile
+index 8aada89..6bbd84d 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -12,7 +12,7 @@ obj-y			:= filemap.o mempool.o oom_kill.o fadvise.o \
+ 			   maccess.o page_alloc.o page-writeback.o \
+ 			   readahead.o swap.o truncate.o vmscan.o shmem.o \
+ 			   prio_tree.o util.o mmzone.o vmstat.o backing-dev.o \
+-			   page_isolation.o mm_init.o mmu_context.o percpu.o \
++			   page_isolation.o mm_init.o mmu_context.o percpu.o my_oom.o \
+ 			   compaction.o $(mmu-y)
+ obj-y += init-mm.o
+
+diff --git a/mm/my_oom.c b/mm/my_oom.c
+new file mode 100644
+index 0000000..c53c8db
+--- /dev/null
++++ b/mm/my_oom.c
+@@ -0,0 +1,23 @@
++#include <linux/syscalls.h>
++#include <linux/sched.h>
++#include <linux/rcupdate.h>
++
++asmlinkage int set_mlimit(uid_t uid, long mem_max)
++{
++	int retVal = -EINVAL;
++
++	rcu_read_lock();
++	if( mem_max > 0 )
++	{	
++		struct user_struct * user = find_user( uid );
++		if( user )
++		{
++			user->mem_max = mem_max;
++			free_uid( user );
++			retVal = 0;
++		}	
++	}
++	rcu_read_unlock();
++
++	return -EINVAL;
++}
+diff --git a/mm/oom_kill.c b/mm/oom_kill.c
+index 46bf2ed5..c8d0c5a 100644
+--- a/mm/oom_kill.c
++++ b/mm/oom_kill.c
+@@ -376,6 +376,77 @@ static struct task_struct *select_bad_process(unsigned int *ppoints,
+ 	return chosen;
+ }
+ 
++struct task_struct* my_select_bad_process(void)
++{
++	struct task_struct *p;
++	struct task_struct *chosen = NULL;
++	const uid_t selected_user = task_uid(current);
++	struct user_struct *p_user = get_current_user();
++	long total_mem_used = 0;
++	long current_max = 0;
++
++	printk("*** selected_user=%d mem_max=%ld \n", selected_user, p_user->mem_max);
++
++	if( p_user->mem_max < 0 )
++	{
++		printk("*** mem limit not set!! \n");
++		return chosen;
++	}
++
++	printk("*** selected_user=%d mem_max=%ld \n", selected_user, p_user->mem_max );
++
++	// Count the total memory being used by current user
++	for_each_process(p)
++	{
++		const uid_t user = task_uid(p);
++		const long mem_used = get_mm_rss(p->mm) * PAGE_SIZE;
++		
++		printk("*** looping: user=%d mem_used=%ld get_mm=%ld page_size=%ld \n", 
++			user, mem_used, get_mm_rss(p->mm), PAGE_SIZE);
++	
++		if( user == selected_user )
++		{		
++			total_mem_used += mem_used;
++			printk("*** looping: user=%d mem_used=%ld running_total=%ld \n", 
++				user, mem_used, total_mem_used);
++		}	
++	}
++	
++	printk("*** selected_user=%d total=%ld user_max=%ld \n", selected_user, total_mem_used, p_user->mem_max);
++
++	// If memory exceeds limit, select one of the user's process to kill
++	if( total_mem_used > p_user->mem_max )
++	{
++		for_each_process(p)
++		{
++			const uid_t user = task_uid(p);
++			const long mem_used = get_mm_rss(p->mm) * PAGE_SIZE;
++
++			printk("*** looping: user=%d mem_used=%ld get_mm=%ld page_size=%ld \n", 
++				user, mem_used, get_mm_rss(p->mm), PAGE_SIZE);
++
++			if( user == selected_user && mem_used > current_max )
++			{
++				chosen = p;
++				current_max = mem_used;
++				printk("*** looping: chosen user=%d mem_used=%ld current_maxl=%ld \n", 
++					user, mem_used, current_max);
++			}
++		}
++	}
++	
++	if( chosen )
++	{
++		printk("*** something was chosen!!! \n");
++	}
++	else
++	{
++		printk("*** NOTHING was chosen!!! \n");
++	}
++
++	return chosen;
++}
++
+ /**
+  * dump_tasks - dump current memory state of all system tasks
+  * @mem: current's memory controller, if constrained
+@@ -529,6 +600,72 @@ static void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
+ }
+ #undef K
+ 
++#define MY_K(x) ((x) << (PAGE_SHIFT-10))
++void my_oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
++		  	 struct mem_cgroup *memcg, nodemask_t *nodemask,
++			 const char *message)
++{
++	struct task_struct *victim = p;
++	struct mm_struct *mm;
++	static DEFINE_RATELIMIT_STATE(oom_rs, DEFAULT_RATELIMIT_INTERVAL,
++					      DEFAULT_RATELIMIT_BURST);
++
++	/*
++	 * If the task is already exiting, don't alarm the sysadmin or kill
++	 * its children or threads, just set TIF_MEMDIE so it can die quickly
++	 */
++	if (p->flags & PF_EXITING) {
++		set_tsk_thread_flag(p, TIF_MEMDIE);
++		return;
++	}
++
++	if (__ratelimit(&oom_rs))
++		dump_header(p, gfp_mask, order, memcg, nodemask);
++
++	task_lock(p);
++	pr_err("%s: Kill process %d (%s) score %d or sacrifice child\n",
++		message, task_pid_nr(p), p->comm, 1000);
++	task_unlock(p);
++
++	victim = find_lock_task_mm(victim);
++	if (!victim)
++		return;
++
++	/* mm cannot safely be dereferenced after task_unlock(victim) */
++	mm = victim->mm;
++	pr_err("Killed process %d (%s) total-vm:%lukB, anon-rss:%lukB, file-rss:%lukB\n",
++		task_pid_nr(victim), victim->comm, MY_K(victim->mm->total_vm),
++		MY_K(get_mm_counter(victim->mm, MM_ANONPAGES)),
++		MY_K(get_mm_counter(victim->mm, MM_FILEPAGES)));
++	task_unlock(victim);
++
++	/*
++	 * Kill all user processes sharing victim->mm in other thread groups, if
++	 * any.  They don't get access to memory reserves, though, to avoid
++	 * depletion of all memory.  This prevents mm->mmap_sem livelock when an
++	 * oom killed thread cannot exit because it requires the semaphore and
++	 * its contended by another thread trying to allocate memory itself.
++	 * That thread will now get access to memory reserves since it has a
++	 * pending fatal signal.
++	 */
++	for_each_process(p)
++		if (p->mm == mm && !same_thread_group(p, victim) &&
++		    !(p->flags & PF_KTHREAD)) {
++			if (p->signal->oom_score_adj == OOM_SCORE_ADJ_MIN)
++				continue;
++
++			task_lock(p);	/* Protect ->comm from prctl() */
++			pr_err("Kill process %d (%s) sharing same memory\n",
++				task_pid_nr(p), p->comm);
++			task_unlock(p);
++			do_send_sig_info(SIGKILL, SEND_SIG_FORCED, p, true);
++		}
++
++	set_tsk_thread_flag(victim, TIF_MEMDIE);
++	do_send_sig_info(SIGKILL, SEND_SIG_FORCED, victim, true);
++}
++#undef MY_K
++
+ /*
+  * Determines whether the kernel must panic because of the panic_on_oom sysctl.
+  */
+@@ -703,7 +840,7 @@ void out_of_memory(struct zonelist *zonelist, gfp_t gfp_mask,
+ 	struct task_struct *p;
+ 	unsigned long totalpages;
+ 	unsigned long freed = 0;
+-	unsigned int points;
++	unsigned int points = 0;
+ 	enum oom_constraint constraint = CONSTRAINT_NONE;
+ 	int killed = 0;
+ 
+@@ -741,8 +878,22 @@ void out_of_memory(struct zonelist *zonelist, gfp_t gfp_mask,
+ 		goto out;
+ 	}
+ 
+-	p = select_bad_process(&points, totalpages, NULL, mpol_mask,
+-			       force_kill);
++	// New OOM logic
++	p = my_select_bad_process();
++	if(p)
++	{
++		my_oom_kill_process(p, gfp_mask, order, 
++				    NULL, nodemask, "Out of memory");
++		killed = 1;
++		goto out;
++	}
++	
++	// If the new logic fails to select anything, revert to old selection
++	if(!p)
++	{
++		p = select_bad_process(&points, totalpages, NULL, mpol_mask, force_kill);
++	}
++
+ 	/* Found nothing?!?! Either we hang forever, or we panic. */
+ 	if (!p) {
+ 		dump_header(NULL, gfp_mask, order, NULL, mpol_mask);
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 69b9521..082ce8f 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -64,6 +64,11 @@
+ #include <asm/div64.h>
+ #include "internal.h"
+ 
++extern struct task_struct* my_select_bad_process(void);
++extern void my_oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
++		  		struct mem_cgroup *memcg, nodemask_t *nodemask,
++				const char *message);
++
+ #ifdef CONFIG_USE_PERCPU_NUMA_NODE_ID
+ DEFINE_PER_CPU(int, numa_node);
+ EXPORT_PER_CPU_SYMBOL(numa_node);
+@@ -2549,7 +2554,8 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
+ 	int migratetype = allocflags_to_migratetype(gfp_mask);
+ 	unsigned int cpuset_mems_cookie;
+ 	int alloc_flags = ALLOC_WMARK_LOW|ALLOC_CPUSET;
+-
++	struct task_struct *kill_this = NULL;
++	
+ 	gfp_mask &= gfp_allowed_mask;
+ 
+ 	lockdep_trace_alloc(gfp_mask);
+@@ -2581,6 +2587,15 @@ retry_cpuset:
+ 	if (allocflags_to_migratetype(gfp_mask) == MIGRATE_MOVABLE)
+ 		alloc_flags |= ALLOC_CMA;
+ #endif
++	// Pre-emptively kill processes which are over their set limit
++	kill_this = my_select_bad_process();
++	if(kill_this)
++	{
++		printk("*** Found something to KILL!!! \n");
++		my_oom_kill_process(kill_this, gfp_mask, order, 
++				    NULL, nodemask, "Out of memory");		
++	}
++
+ 	/* First allocation attempt */
+ 	page = get_page_from_freelist(gfp_mask|__GFP_HARDWALL, nodemask, order,
+ 			zonelist, high_zoneidx, alloc_flags,
